@@ -5,6 +5,10 @@ import plotly.graph_objects as go
 from scipy.optimize import curve_fit
 import re
 
+# --- Librerías para Google Sheets ---
+import gspread
+from google.oauth2.service_account import Credentials
+
 # ==========================================
 # 1. CONFIGURACIÓN DE LA PÁGINA
 # ==========================================
@@ -179,29 +183,40 @@ nombre_sitio = st.sidebar.text_input("Nombre del sitio (Pestaña en Google Sheet
 if st.sidebar.button("Extraer Matriz de Generación"):
     if nombre_sitio:
         try:
-            with st.spinner('Extrayendo datos de Google Sheets...'):
+            with st.spinner('Autenticando y extrayendo datos de Google Sheets...'):
+                # 1. Configurar Autenticación
+                scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+                creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
+                client = gspread.authorize(creds)
+                
+                # 2. Conectar al documento por ID
                 sheet_id = "1jsH1jRExZpcPpZjUCcri-7g-Weye08twxMfj4RNqcbA"
-                url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+                sh = client.open_by_key(sheet_id)
                 
-                df_matriz = pd.read_excel(
-                    url, 
-                    sheet_name=nombre_sitio, 
-                    skiprows=30,   
-                    usecols="B:Y", 
-                    nrows=12,      
-                    header=None    
-                )
+                # 3. Acceder a la pestaña específica
+                worksheet = sh.worksheet(nombre_sitio)
                 
+                # 4. Extraer SOLO el rango de la matriz (B31:Y42)
+                valores_matriz = worksheet.get('B31:Y42')
+                
+                # 5. Convertir a DataFrame de Pandas y forzar a números
+                df_matriz = pd.DataFrame(valores_matriz)
+                # Reemplazar comas por puntos (si hay formato europeo) y convertir a float
+                df_matriz = df_matriz.replace(',', '.', regex=True).apply(pd.to_numeric, errors='coerce').fillna(0.0)
+                
+                # 6. Asignar nombres a filas (meses) y columnas (horas)
                 meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
                          "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
                 df_matriz.index = meses
                 df_matriz.columns = [f"{h:02d}:00" for h in range(24)]
                 
+                # Guardar en sesión
                 st.session_state['matriz_generacion'] = df_matriz
                 
             st.sidebar.success("¡Matriz extraída con éxito!")
-        except ValueError:
-            st.sidebar.error(f"No se encontró la pestaña '{nombre_sitio}'. Verifica que el nombre sea exacto.")
+            
+        except gspread.exceptions.WorksheetNotFound:
+            st.sidebar.error(f"No se encontró la pestaña '{nombre_sitio}'. Verifica el nombre.")
         except Exception as e:
             st.sidebar.error(f"Error al extraer los datos: {e}")
     else:
@@ -211,7 +226,7 @@ if st.sidebar.button("Extraer Matriz de Generación"):
 # 5. VISUALIZACIÓN DE MATRIZ EXTERNA (GOOGLE SHEETS)
 # ==========================================
 if st.session_state['matriz_generacion'] is not None:
-    st.subheader(f"📊 Matriz Base Extraída desde Google Sheets")
+    st.subheader("📊 Matriz Base Extraída desde Google Sheets")
     st.dataframe(st.session_state['matriz_generacion'], use_container_width=True)
     st.markdown("---")
 
