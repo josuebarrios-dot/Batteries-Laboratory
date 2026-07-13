@@ -70,67 +70,105 @@ def modelo_senoidal_solar(t, p_max, t_amanecer, t_atardecer):
     return np.where((fase > 0) & (fase < 1), p_max * np.sin(np.pi * fase), 0.0)
 
 @st.cache_data(show_spinner=False)
-def procesar_sistema_solar(df_sky, cols_sistema, titulo_sistema, color_curva):
+def procesar_sistema_solar(df_sky_raw, cols_sistema, titulo_sistema, color_curva):
     if not cols_sistema: return None, None
-
+    
+    df_sky = df_sky_raw.copy()
     df_sky['P_inst'] = df_sky[cols_sistema].sum(axis=1, min_count=1).fillna(0)
     df_sky['P_inst_clean'] = np.where(df_sky['P_inst'] >= 0.6, df_sky['P_inst'], np.nan)
+    df_sky['YearMonth'] = df_sky['Timestamp'].dt.to_period('M')
     
-    df_env = df_sky.groupby('Time_Only').agg(
+    # 1. Variables globales de referencia (promedios y máximos de todo el dataset)
+    df_env_global = df_sky.groupby('Time_Only').agg(
         P_real=('P_inst', 'max'),
         P_avg=('P_inst_clean', 'mean'),
         Hour_Decimal=('Hour_Decimal', 'first')
     ).reset_index()
 
-    df_env['P_avg'] = df_env['P_avg'].fillna(0)
+    df_env_global['P_avg'] = df_env_global['P_avg'].fillna(0)
+    x_data_global = df_env_global['Hour_Decimal'].values
+    y_max_global = df_env_global['P_real'].values
+    y_avg_global = df_env_global['P_avg'].values
+    
+    # 2. Generación de curvas típicas INDIVIDUALES por mes
+    tipicas_mensuales = []
+    
+    for ym in df_sky['YearMonth'].unique():
+        df_m = df_sky[df_sky['YearMonth'] == ym]
+        
+        # Agrupar datos del mes actual
+        df_env_m = df_m.groupby('Time_Only').agg(
+            P_real_m=('P_inst', 'max')
+        ).reset_index()
+        
+        # Hacer merge con el global para asegurar misma longitud de arrays (rellenar con 0 si faltan horas)
+        df_env_m = pd.merge(df_env_global[['Time_Only', 'Hour_Decimal']], df_env_m, on='Time_Only', how='left').fillna(0)
+        
+        x_m = df_env_m['Hour_Decimal'].values
+        y_max_m = df_env_m['P_real_m'].values
+        
+        # Calcular Clear Sky del mes
+        mask_dia = y_max_m > 0.1
+        curva_teorica_m = np.zeros_like(x_m)
+        
+        if np.sum(mask_dia) > 10:
+            p_max_obs = np.max(y_max_m[mask_dia])
+            def modelo_ajuste(t, t_am, t_at):
+                return modelo_senoidal_solar(t, p_max_obs, t_am, t_at)
+            
+            try:
+                popt, _ = curve_fit(modelo_ajuste, x_m[mask_dia], y_max_m[mask_dia], p0=[6.25, 18.0], bounds=([5.5, 17.0], [7.5, 19.0]))
+                curva_teorica_m = modelo_senoidal_solar(x_m, p_max_obs, *popt)
+            except: pass
+            
+        # Empalme (Clear Sky antes de las 13:00, Máxima desde las 13:00)
+        curva_tipica_m = np.where(x_m < 13.0, curva_teorica_m, y_max_m)
+        tipicas_mensuales.append(curva_tipica_m)
+        
+    # 3. Promedio de todas las Curvas Típicas Mensuales
+    if tipicas_mensuales:
+        curva_tipica_promedio = np.mean(tipicas_mensuales, axis=0)
+    else:
+        curva_tipica_promedio = np.zeros_like(x_data_global)
 
-    x_data = df_env['Hour_Decimal'].values
-    y_data = df_env['P_real'].values
-    y_avg = df_env['P_avg'].values
-    
-    mask_dia = y_data > 0.1
-    curva_teorica = np.zeros_like(x_data)
-    
-    if np.sum(mask_dia) > 10:
-        p_max_obs = np.max(y_data[mask_dia])
-        def modelo_ajuste(t, t_am, t_at):
-            return modelo_senoidal_solar(t, p_max_obs, t_am, t_at)
-        p0 = [6.25, 18.0]
-        limites = ([5.5, 17.0], [7.5, 19.0])
+    # (Opcional visual) Curva teórica global para referencia en la gráfica
+    curva_teorica_global = np.zeros_like(x_data_global)
+    if np.sum(y_max_global > 0.1) > 10:
         try:
-            popt, _ = curve_fit(modelo_ajuste, x_data[mask_dia], y_data[mask_dia], p0=p0, bounds=limites)
-            curva_teorica = modelo_senoidal_solar(x_data, p_max_obs, *popt)
+            p_max_obs_g = np.max(y_max_global[y_max_global > 0.1])
+            popt_g, _ = curve_fit(modelo_ajuste, x_data_global[y_max_global > 0.1], y_max_global[y_max_global > 0.1], p0=[6.25, 18.0], bounds=([5.5, 17.0], [7.5, 19.0]))
+            curva_teorica_global = modelo_senoidal_solar(x_data_global, p_max_obs_g, *popt_g)
         except: pass
 
-    curva_maxima = y_data
-    curva_tipica = np.where(x_data < 13.0, curva_teorica, curva_maxima)
-
+    # 4. DataFrame de resultados
     df_final = pd.DataFrame({
-        'Hora_Dec': x_data,
-        'Time_Only': df_env['Time_Only'],
-        'Ideal': curva_teorica,
-        'Maxima': curva_maxima,
-        'Promedio': y_avg,
-        'Tipica': curva_tipica
+        'Hora_Dec': x_data_global,
+        'Time_Only': df_env_global['Time_Only'],
+        'Ideal': curva_teorica_global,
+        'Maxima': y_max_global,
+        'Promedio': y_avg_global,
+        'Tipica': curva_tipica_promedio # Esta es la nueva Curva Típica Promedio
     })
 
+    # 5. Construcción de Gráfica
     fig = go.Figure()
     for d_str in sorted(df_sky['Date_Str'].unique()):
         df_d = df_sky[df_sky['Date_Str'] == d_str]
         fig.add_trace(go.Scatter(x=df_d['Time_Only'], y=df_d['P_inst'], mode='lines', 
                                  line=dict(color='rgba(150,150,150,0.15)', width=1), showlegend=False))
     
-    fig.add_trace(go.Scatter(x=df_env['Time_Only'], y=y_avg, mode='lines', name="Promedio", 
+    fig.add_trace(go.Scatter(x=df_env_global['Time_Only'], y=y_avg_global, mode='lines', name="Promedio (Global)", 
                              line=dict(color='#FFA500', width=3, dash='dash')))
-    fig.add_trace(go.Scatter(x=df_env['Time_Only'], y=y_data, mode='lines', name="Máx Real", 
+    fig.add_trace(go.Scatter(x=df_env_global['Time_Only'], y=y_max_global, mode='lines', name="Máx Real (Global)", 
                              line=dict(color='rgba(255, 214, 0, 0.6)', width=2)))
-    fig.add_trace(go.Scatter(x=df_env['Time_Only'], y=curva_teorica, mode='lines', name="Máx Ideal", 
+    fig.add_trace(go.Scatter(x=df_env_global['Time_Only'], y=curva_teorica_global, mode='lines', name="Máx Ideal (Global)", 
                              line=dict(color=color_curva, width=4)))
-    fig.add_trace(go.Scatter(x=df_env['Time_Only'], y=curva_tipica, mode='lines', name="Curva Típica", 
-                             line=dict(color='#FF4B4B', width=2, dash='dot')))
+    # La nueva curva estrella
+    fig.add_trace(go.Scatter(x=df_env_global['Time_Only'], y=curva_tipica_promedio, mode='lines', name="Curva Típica Promedio", 
+                             line=dict(color='#FF4B4B', width=3, dash='dot')))
 
     fig.update_layout(
-        title=f"Datos Base: {titulo_sistema}",
+        title=f"Datos Base: {titulo_sistema} ({len(tipicas_mensuales)} meses evaluados)",
         width=1200, height=400,
         template="plotly_dark",
         legend=dict(orientation="h", y=-0.2), 
@@ -302,9 +340,9 @@ if uploaded_file is not None:
             )
             return fig
 
-        st.subheader("Predicción Mensual Solar (Curva Típica * Factor)")
+        st.subheader("Predicción Mensual Solar (Curva Típica Promedio * Factor)")
         if st.session_state['matriz_generacion'] is not None:
-            st.info("💡 Las gráficas están siendo escaladas usando el **Factor Normalizado** proveniente de Google Sheets.")
+            st.info("💡 Las gráficas están escalando la **Curva Típica Promedio** usando el Factor Normalizado de Google Sheets.")
         else:
             st.info("💡 Factor de 1.0 aplicado a todos los meses (Extrae la matriz de Google Sheets para aplicar proyección mensual real).")
             
@@ -323,7 +361,7 @@ if uploaded_file is not None:
 
         # 6.3. TABLA HORIZONTAL POR MES
         st.markdown("---")
-        st.subheader("Tabla Horizontal: Producción Típica Total CSV por Mes (kW)")
+        st.subheader("Tabla Horizontal: Producción Típica Total por Mes (kW)")
         
         df_total['Hora_Int'] = np.floor(df_total['Hora_Dec']).astype(int)
         perfil_base_24h = df_total.groupby('Hora_Int')['Tipica'].mean().reindex(range(24), fill_value=0).values
