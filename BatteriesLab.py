@@ -100,7 +100,7 @@ def procesar_sistema_solar(df_sky, cols_sistema, titulo_sistema, color_curva):
             curva_teorica = modelo_senoidal_solar(x_data, p_max_obs, *popt)
         except: pass
 
-    # 2. Curva Máxima y Curva Típica (MODIFICADO A LAS 13:00)
+    # 2. Curva Máxima y Curva Típica (Empalme a las 13:00)
     curva_maxima = y_data
     curva_tipica = np.where(x_data < 13.0, curva_teorica, curva_maxima)
 
@@ -155,23 +155,69 @@ def procesar_perfil_carga(df, cols_carga):
     return perfil_completo['P_Load_Clean'].values
 
 # ==========================================
-# 3. GESTIÓN DE ESTADO (IDENTIFICADORES)
+# 3. GESTIÓN DE ESTADO
 # ==========================================
 if 'n_baterias_det' not in st.session_state: st.session_state['n_baterias_det'] = 0
 if 'n_inv_det' not in st.session_state: st.session_state['n_inv_det'] = 0
 if 'n_ctrl_det' not in st.session_state: st.session_state['n_ctrl_det'] = 0
+if 'matriz_generacion' not in st.session_state: st.session_state['matriz_generacion'] = None
 
 # ==========================================
-# 4. EXTRACCIÓN DE DATOS
+# 4. BARRA LATERAL (ENTRADAS DE DATOS)
 # ==========================================
-st.sidebar.header("Carga de Datos")
+st.sidebar.header("1. Carga de Datos CSV")
 uploaded_file = st.sidebar.file_uploader("Cargar CSV de Registros", type=["csv"])
 
-st.sidebar.markdown("---")
 meses_bajos = st.sidebar.multiselect("Meses con reducción del 20% (Curva Típica)", 
                                      options=list(range(1, 13)), default=[6, 7, 8],
                                      help="Selecciona 3 meses (ej. temporada de lluvias).")
 
+st.sidebar.markdown("---")
+st.sidebar.header("2. Predicción Mensual Externa")
+nombre_sitio = st.sidebar.text_input("Nombre del sitio (Pestaña en Google Sheets):")
+
+if st.sidebar.button("Extraer Matriz de Generación"):
+    if nombre_sitio:
+        try:
+            with st.spinner('Extrayendo datos de Google Sheets...'):
+                sheet_id = "1jsH1jRExZpcPpZjUCcri-7g-Weye08twxMfj4RNqcbA"
+                url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=xlsx"
+                
+                df_matriz = pd.read_excel(
+                    url, 
+                    sheet_name=nombre_sitio, 
+                    skiprows=30,   
+                    usecols="B:Y", 
+                    nrows=12,      
+                    header=None    
+                )
+                
+                meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                         "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+                df_matriz.index = meses
+                df_matriz.columns = [f"{h:02d}:00" for h in range(24)]
+                
+                st.session_state['matriz_generacion'] = df_matriz
+                
+            st.sidebar.success("¡Matriz extraída con éxito!")
+        except ValueError:
+            st.sidebar.error(f"No se encontró la pestaña '{nombre_sitio}'. Verifica que el nombre sea exacto.")
+        except Exception as e:
+            st.sidebar.error(f"Error al extraer los datos: {e}")
+    else:
+        st.sidebar.warning("Por favor ingresa un nombre de sitio válido.")
+
+# ==========================================
+# 5. VISUALIZACIÓN DE MATRIZ EXTERNA (GOOGLE SHEETS)
+# ==========================================
+if st.session_state['matriz_generacion'] is not None:
+    st.subheader(f"📊 Matriz Base Extraída desde Google Sheets")
+    st.dataframe(st.session_state['matriz_generacion'], use_container_width=True)
+    st.markdown("---")
+
+# ==========================================
+# 6. PROCESAMIENTO DE CSV Y GRÁFICAS
+# ==========================================
 if uploaded_file is not None:
     df_raw = pd.read_csv(uploaded_file)
     df_raw.columns = [c.strip() for c in df_raw.columns]
@@ -195,7 +241,7 @@ if uploaded_file is not None:
     load_cols = find_cols(df_raw, ['Load', 'Power'], exclude=['Meter'])
     cols_carga_a_usar = meter_cols if meter_cols else load_cols
 
-    # Procesar dataframes y extraer figuras
+    # Procesar dataframes y extraer figuras base
     fig_base_inv, df_inv = procesar_sistema_solar(df_raw, inv_cols, "Inversores", "#00E676")
     fig_base_ctrl, df_ctrl = procesar_sistema_solar(df_raw, ctrl_cols, "Controladores", "#4FC3F7")
     carga_24h = procesar_perfil_carga(df_raw, cols_carga_a_usar)
@@ -208,9 +254,9 @@ if uploaded_file is not None:
         carga_vector = np.zeros(len(df_inv)) if df_inv is not None else np.zeros(100)
 
     # ==========================================
-    # 5. VISUALIZACIÓN DE GRÁFICAS BASE (FILA 1)
+    # 6.1. VISUALIZACIÓN DE GRÁFICAS BASE (FILA 1)
     # ==========================================
-    st.subheader("Análisis de Datos Base (Superposición de Curvas)")
+    st.subheader("Análisis de Datos Base CSV (Superposición de Curvas)")
     
     col_base1, col_base2 = st.columns(2)
     with col_base1:
@@ -221,7 +267,7 @@ if uploaded_file is not None:
     st.markdown("---")
 
     # ==========================================
-    # 6. GENERACIÓN DE CURVAS MENSUALES (FILA 2 y 3)
+    # 6.2. GENERACIÓN DE CURVAS MENSUALES (FILA 2 y 3)
     # ==========================================
     if df_inv is not None and df_ctrl is not None:
         
@@ -256,7 +302,7 @@ if uploaded_file is not None:
             )
             return fig
 
-        st.subheader("Predicción Mensual (Curva Típica y Carga)")
+        st.subheader("Predicción Mensual CSV (Curva Típica y Carga)")
         
         # Fila 2: Predicciones individuales
         col_pred1, col_pred2 = st.columns(2)
@@ -265,7 +311,7 @@ if uploaded_file is not None:
         with col_pred2:
             st.plotly_chart(graficar_12_meses(df_ctrl, "Predicción 12 Meses - Controladores", "#4FC3F7"), use_container_width=True)
         
-        # Fila 3: Producción Total (Alineado a la izquierda u ocupando el ancho de 1 columna)
+        # Fila 3: Producción Total
         col_pred3, col_pred4 = st.columns(2)
         df_total = df_inv.copy()
         df_total['Tipica'] = df_inv['Tipica'] + df_ctrl['Tipica']
@@ -274,16 +320,16 @@ if uploaded_file is not None:
             st.plotly_chart(graficar_12_meses(df_total, "Producción Solar Total (Inv + Ctrl)", "#FFD700"), use_container_width=True)
 
         # ==========================================
-        # 7. TABLA HORIZONTAL POR MES
+        # 6.3. TABLA HORIZONTAL POR MES (CSV)
         # ==========================================
         st.markdown("---")
-        st.subheader("Tabla Horizontal: Producción Típica Total por Mes (kW)")
+        st.subheader("Tabla Horizontal: Producción Típica Total CSV por Mes (kW)")
         
-        # Agrupar por hora para tener el vector base de 24 horas (rellenado con 0 si faltan)
+        # Agrupar por hora para tener el vector base de 24 horas
         df_total['Hora_Int'] = np.floor(df_total['Hora_Dec']).astype(int)
         perfil_base_24h = df_total.groupby('Hora_Int')['Tipica'].mean().reindex(range(24), fill_value=0).values
         
-        # Generar las filas de la tabla mes a mes aplicando la reducción si corresponde
+        # Generar las filas de la tabla mes a mes aplicando la reducción
         datos_tabla = {}
         for mes in range(1, 13):
             factor = 0.8 if mes in meses_bajos else 1.0
@@ -296,4 +342,5 @@ if uploaded_file is not None:
         st.dataframe(df_tabla_meses, use_container_width=True)
         
 else:
-    st.info("Sube un archivo CSV en la barra lateral izquierda para generar las gráficas base y las predicciones mensuales.")
+    if st.session_state['matriz_generacion'] is None:
+        st.info("Sube un archivo CSV o extrae los datos de Google Sheets en la barra lateral izquierda para comenzar.")
