@@ -71,10 +71,8 @@ def modelo_senoidal_solar(t, p_max, t_amanecer, t_atardecer):
 def procesar_sistema_solar(df_sky, cols_sistema, titulo_sistema, color_curva):
     if not cols_sistema: return None, None
 
-    # Suma de la potencia instantánea
     df_sky['P_inst'] = df_sky[cols_sistema].sum(axis=1, min_count=1).fillna(0)
     
-    # Filtrar ruido para el promedio
     df_sky['P_inst_clean'] = np.where(df_sky['P_inst'] >= 0.6, df_sky['P_inst'], np.nan)
     
     df_env = df_sky.groupby('Time_Only').agg(
@@ -89,7 +87,6 @@ def procesar_sistema_solar(df_sky, cols_sistema, titulo_sistema, color_curva):
     y_data = df_env['P_real'].values
     y_avg = df_env['P_avg'].values
     
-    # 1. Curva Ideal (Clear Sky)
     mask_dia = y_data > 0.1
     curva_teorica = np.zeros_like(x_data)
     
@@ -104,7 +101,6 @@ def procesar_sistema_solar(df_sky, cols_sistema, titulo_sistema, color_curva):
             curva_teorica = modelo_senoidal_solar(x_data, p_max_obs, *popt)
         except: pass
 
-    # 2. Curva Máxima y Curva Típica (Empalme a las 13:00)
     curva_maxima = y_data
     curva_tipica = np.where(x_data < 13.0, curva_teorica, curva_maxima)
 
@@ -117,7 +113,6 @@ def procesar_sistema_solar(df_sky, cols_sistema, titulo_sistema, color_curva):
         'Tipica': curva_tipica
     })
 
-    # Construcción de la Gráfica Original (Base) asegurando 1200x400
     fig = go.Figure()
     for d_str in sorted(df_sky['Date_Str'].unique()):
         df_d = df_sky[df_sky['Date_Str'] == d_str]
@@ -184,36 +179,39 @@ if st.sidebar.button("Extraer Matriz de Generación"):
     if nombre_sitio:
         try:
             with st.spinner('Autenticando y extrayendo datos de Google Sheets...'):
-                # 1. Configurar Autenticación
                 scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
                 creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
                 client = gspread.authorize(creds)
                 
-                # 2. Conectar al documento por ID
                 sheet_id = "1jsH1jRExZpcPpZjUCcri-7g-Weye08twxMfj4RNqcbA"
                 sh = client.open_by_key(sheet_id)
-                
-                # 3. Acceder a la pestaña específica
                 worksheet = sh.worksheet(nombre_sitio)
                 
-                # 4. Extraer SOLO el rango de la matriz (B31:Y42)
                 valores_matriz = worksheet.get('B31:Y42')
-                
-                # 5. Convertir a DataFrame de Pandas y forzar a números
                 df_matriz = pd.DataFrame(valores_matriz)
-                # Reemplazar comas por puntos (si hay formato europeo) y convertir a float
                 df_matriz = df_matriz.replace(',', '.', regex=True).apply(pd.to_numeric, errors='coerce').fillna(0.0)
                 
-                # 6. Asignar nombres a filas (meses) y columnas (horas)
                 meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
                          "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
                 df_matriz.index = meses
                 df_matriz.columns = [f"{h:02d}:00" for h in range(24)]
                 
-                # Guardar en sesión
+                # --- NUEVAS COLUMNAS (TOTAL Y FACTOR) ---
+                # Columna Extra 1: Suma total de las 24 horas por mes
+                df_matriz['Total Día'] = df_matriz.sum(axis=1).round(2)
+                
+                # Encontrar el valor máximo de la columna 'Total Día'
+                valor_maximo = df_matriz['Total Día'].max()
+                
+                # Columna Extra 2: Relación entre el Total del mes y el valor Máximo
+                if valor_maximo > 0:
+                    df_matriz['Factor'] = (df_matriz['Total Día'] / valor_maximo).round(4)
+                else:
+                    df_matriz['Factor'] = 0.0
+                
                 st.session_state['matriz_generacion'] = df_matriz
                 
-            st.sidebar.success("¡Matriz extraída con éxito!")
+            st.sidebar.success("¡Matriz y Factores extraídos con éxito!")
             
         except gspread.exceptions.WorksheetNotFound:
             st.sidebar.error(f"No se encontró la pestaña '{nombre_sitio}'. Verifica el nombre.")
@@ -227,6 +225,7 @@ if st.sidebar.button("Extraer Matriz de Generación"):
 # ==========================================
 if st.session_state['matriz_generacion'] is not None:
     st.subheader("📊 Matriz Base Extraída desde Google Sheets")
+    # Para visualizar de manera óptima sin deformar el ancho de pantalla
     st.dataframe(st.session_state['matriz_generacion'], use_container_width=True)
     st.markdown("---")
 
@@ -256,12 +255,10 @@ if uploaded_file is not None:
     load_cols = find_cols(df_raw, ['Load', 'Power'], exclude=['Meter'])
     cols_carga_a_usar = meter_cols if meter_cols else load_cols
 
-    # Procesar dataframes y extraer figuras base
     fig_base_inv, df_inv = procesar_sistema_solar(df_raw, inv_cols, "Inversores", "#00E676")
     fig_base_ctrl, df_ctrl = procesar_sistema_solar(df_raw, ctrl_cols, "Controladores", "#4FC3F7")
     carga_24h = procesar_perfil_carga(df_raw, cols_carga_a_usar)
     
-    # Expandir carga
     if carga_24h is not None and df_inv is not None:
         hora_int_array = np.floor(df_inv['Hora_Dec']).astype(int)
         carga_vector = np.array([carga_24h[h] for h in hora_int_array])
@@ -319,14 +316,12 @@ if uploaded_file is not None:
 
         st.subheader("Predicción Mensual CSV (Curva Típica y Carga)")
         
-        # Fila 2: Predicciones individuales
         col_pred1, col_pred2 = st.columns(2)
         with col_pred1:
             st.plotly_chart(graficar_12_meses(df_inv, "Predicción 12 Meses - Inversores", "#00E676"), use_container_width=True)
         with col_pred2:
             st.plotly_chart(graficar_12_meses(df_ctrl, "Predicción 12 Meses - Controladores", "#4FC3F7"), use_container_width=True)
         
-        # Fila 3: Producción Total
         col_pred3, col_pred4 = st.columns(2)
         df_total = df_inv.copy()
         df_total['Tipica'] = df_inv['Tipica'] + df_ctrl['Tipica']
@@ -340,17 +335,14 @@ if uploaded_file is not None:
         st.markdown("---")
         st.subheader("Tabla Horizontal: Producción Típica Total CSV por Mes (kW)")
         
-        # Agrupar por hora para tener el vector base de 24 horas
         df_total['Hora_Int'] = np.floor(df_total['Hora_Dec']).astype(int)
         perfil_base_24h = df_total.groupby('Hora_Int')['Tipica'].mean().reindex(range(24), fill_value=0).values
         
-        # Generar las filas de la tabla mes a mes aplicando la reducción
         datos_tabla = {}
         for mes in range(1, 13):
             factor = 0.8 if mes in meses_bajos else 1.0
             datos_tabla[f"Mes {mes}"] = np.round(perfil_base_24h * factor, 2)
             
-        # Crear DataFrame final
         columnas_horas = [f"{h:02d}:00" for h in range(24)]
         df_tabla_meses = pd.DataFrame.from_dict(datos_tabla, orient='index', columns=columnas_horas)
         
