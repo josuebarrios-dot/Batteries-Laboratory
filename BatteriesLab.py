@@ -147,7 +147,7 @@ def procesar_sistema_solar(df_sky_raw, cols_sistema, titulo_sistema, color_curva
         'Ideal': curva_teorica_global,
         'Maxima': y_max_global,
         'Promedio': y_avg_global,
-        'Tipica': curva_tipica_promedio # Esta es la nueva Curva Típica Promedio
+        'Tipica': curva_tipica_promedio
     })
 
     # 5. Construcción de Gráfica
@@ -163,7 +163,6 @@ def procesar_sistema_solar(df_sky_raw, cols_sistema, titulo_sistema, color_curva
                              line=dict(color='rgba(255, 214, 0, 0.6)', width=2)))
     fig.add_trace(go.Scatter(x=df_env_global['Time_Only'], y=curva_teorica_global, mode='lines', name="Máx Ideal (Global)", 
                              line=dict(color=color_curva, width=4)))
-    # La nueva curva estrella
     fig.add_trace(go.Scatter(x=df_env_global['Time_Only'], y=curva_tipica_promedio, mode='lines', name="Curva Típica Promedio", 
                              line=dict(color='#FF4B4B', width=3, dash='dot')))
 
@@ -382,6 +381,18 @@ if uploaded_file is not None:
         
         st.dataframe(df_tabla_meses, use_container_width=True)
 
+        # TABLA DE PERFIL DE CARGA
+        st.markdown("---")
+        st.subheader("Tabla Horizontal: Perfil de Carga Promedio (kW)")
+        
+        if carga_24h is not None:
+            carga_mostrar = np.round(carga_24h, 2)
+        else:
+            carga_mostrar = np.zeros(24)
+            
+        df_tabla_carga = pd.DataFrame([carga_mostrar], index=["Carga Promedio"], columns=columnas_horas)
+        st.dataframe(df_tabla_carga, use_container_width=True)
+
         # ==========================================
         # 6.4. DIMENSIONAMIENTO DE BATERÍAS (BALANCE DE ENERGÍA)
         # ==========================================
@@ -396,9 +407,8 @@ if uploaded_file is not None:
         for mes in MESES_NOMBRES:
             solar_24h = df_tabla_meses.loc[mes].values
             
-            # Dado que los datos están en horas enteras, la potencia (kW) equivale directamente a energía (kWh) por cada hora.
-            excedente_24h = np.maximum(0, solar_24h - carga_vector)
-            consumo_directo_24h = np.minimum(solar_24h, carga_vector)
+            excedente_24h = np.maximum(0, solar_24h - carga_mostrar)
+            consumo_directo_24h = np.minimum(solar_24h, carga_mostrar)
             
             e_solar = np.sum(solar_24h)
             e_carga_directa = np.sum(consumo_directo_24h)
