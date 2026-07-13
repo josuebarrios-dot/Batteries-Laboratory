@@ -153,7 +153,7 @@ def procesar_perfil_carga(df, cols_carga):
     return perfil_completo['P_Load_Clean'].values
 
 # ==========================================
-# 3. GESTIÓN DE ESTADO
+# 3. GESTIÓN DE ESTADO Y CONSTANTES
 # ==========================================
 if 'n_baterias_det' not in st.session_state: st.session_state['n_baterias_det'] = 0
 if 'n_inv_det' not in st.session_state: st.session_state['n_inv_det'] = 0
@@ -164,14 +164,27 @@ if 'matriz_generacion' not in st.session_state: st.session_state['matriz_generac
 MESES_NOMBRES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
+# Paleta de 12 colores únicos y vibrantes (uno por cada mes)
+COLORES_MESES = [
+    '#FF3366', # Enero (Rosa/Rojo)
+    '#FF9933', # Febrero (Naranja)
+    '#FFCC00', # Marzo (Amarillo)
+    '#99CC33', # Abril (Verde Lima)
+    '#33CC66', # Mayo (Verde Claro)
+    '#00CC99', # Junio (Turquesa)
+    '#00CCCC', # Julio (Cian)
+    '#3399FF', # Agosto (Azul Claro)
+    '#6666FF', # Septiembre (Azul/Púrpura)
+    '#9933FF', # Octubre (Morado)
+    '#CC00CC', # Noviembre (Magenta)
+    '#FF6699'  # Diciembre (Rosa Pastel)
+]
+
 # ==========================================
 # 4. BARRA LATERAL (ENTRADAS DE DATOS)
 # ==========================================
 st.sidebar.header("1. Carga de Datos CSV")
 uploaded_file = st.sidebar.file_uploader("Cargar CSV de Registros", type=["csv"])
-
-meses_bajos = st.sidebar.multiselect("Meses con reducción manual (Respaldo si no hay Google Sheets)", 
-                                     options=list(range(1, 13)), default=[6, 7, 8])
 
 st.sidebar.markdown("---")
 st.sidebar.header("2. Predicción Mensual Externa")
@@ -277,26 +290,23 @@ if uploaded_file is not None:
     # ==========================================
     if df_inv is not None and df_ctrl is not None:
         
-        def graficar_12_meses(df_fuente, titulo, color_base):
+        def graficar_12_meses(df_fuente, titulo):
             fig = go.Figure()
             for i, mes_nombre in enumerate(MESES_NOMBRES):
-                # Extraer factor de Google Sheets si existe, si no, usar el respaldo manual
+                # Extraer factor de Google Sheets si existe, si no, usar 1.0 (Sin reducción)
                 if st.session_state['matriz_generacion'] is not None:
                     factor = st.session_state['matriz_generacion'].loc[mes_nombre, 'Factor']
                     etiqueta = f"{mes_nombre} (F: {factor:.2f})"
                 else:
-                    factor = 0.8 if (i + 1) in meses_bajos else 1.0
-                    etiqueta = f"{mes_nombre} {'(Manual)' if factor < 1.0 else ''}"
-                
-                opacidad = 0.8 if factor < 1.0 else 0.4
-                color = '#FF4B4B' if factor < 1.0 else color_base
+                    factor = 1.0
+                    etiqueta = f"{mes_nombre}"
                 
                 fig.add_trace(go.Scatter(x=df_fuente['Time_Only'], 
                                          y=df_fuente['Tipica'] * factor, 
                                          mode='lines', 
                                          name=etiqueta,
-                                         line=dict(color=color),
-                                         opacity=opacidad))
+                                         line=dict(color=COLORES_MESES[i]),
+                                         opacity=0.85))
             
             fig.add_trace(go.Scatter(x=df_fuente['Time_Only'], 
                                      y=carga_vector, 
@@ -317,19 +327,21 @@ if uploaded_file is not None:
         st.subheader("Predicción Mensual CSV (Curva Típica * Factor)")
         if st.session_state['matriz_generacion'] is not None:
             st.info("💡 Las gráficas están siendo escaladas usando el **Factor Normalizado** proveniente de Google Sheets.")
-        
+        else:
+            st.info("💡 Factor de 1.0 aplicado a todos los meses (Extrae la matriz de Google Sheets para aplicar proyección mensual real).")
+            
         col_pred1, col_pred2 = st.columns(2)
         with col_pred1:
-            st.plotly_chart(graficar_12_meses(df_inv, "Predicción 12 Meses - Inversores", "#00E676"), use_container_width=True)
+            st.plotly_chart(graficar_12_meses(df_inv, "Predicción 12 Meses - Inversores"), use_container_width=True)
         with col_pred2:
-            st.plotly_chart(graficar_12_meses(df_ctrl, "Predicción 12 Meses - Controladores", "#4FC3F7"), use_container_width=True)
+            st.plotly_chart(graficar_12_meses(df_ctrl, "Predicción 12 Meses - Controladores"), use_container_width=True)
         
         col_pred3, col_pred4 = st.columns(2)
         df_total = df_inv.copy()
         df_total['Tipica'] = df_inv['Tipica'] + df_ctrl['Tipica']
         
         with col_pred3:
-            st.plotly_chart(graficar_12_meses(df_total, "Producción Solar Total (Inv + Ctrl)", "#FFD700"), use_container_width=True)
+            st.plotly_chart(graficar_12_meses(df_total, "Producción Solar Total (Inv + Ctrl)"), use_container_width=True)
 
         # ==========================================
         # 6.3. TABLA HORIZONTAL POR MES
@@ -345,7 +357,7 @@ if uploaded_file is not None:
             if st.session_state['matriz_generacion'] is not None:
                 factor = st.session_state['matriz_generacion'].loc[mes_nombre, 'Factor']
             else:
-                factor = 0.8 if (i + 1) in meses_bajos else 1.0
+                factor = 1.0
                 
             datos_tabla[mes_nombre] = np.round(perfil_base_24h * factor, 2)
             
