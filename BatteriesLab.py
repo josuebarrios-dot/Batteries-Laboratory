@@ -346,7 +346,7 @@ else:
     st.info("Sube un archivo CSV en la barra lateral para generar las gráficas base y predicciones solares.")
 
 # ==========================================
-# 7. ANÁLISIS DE CLIPPING Y ESTADO DE CARGA (NUEVA SECCIÓN)
+# 7. ANÁLISIS DE CLIPPING Y ESTADO DE CARGA (BATERÍA)
 # ==========================================
 st.markdown("---")
 st.header("Análisis de Batería (Clipping y SoC)")
@@ -382,7 +382,7 @@ if uploaded_file_soc is not None:
             end_time_str = f"{rango_horas[1]:02d}:00"
             df_day = df_soc_idx.between_time(start_time_str, end_time_str).copy()
 
-            # CORRECCIÓN DEL KEY ERROR: Devolver el índice a columna antes de agrupar
+            # Devolver el índice a columna antes de agrupar
             df_day = df_day.reset_index()
 
             # Filtrar donde el SoC supera el límite y extraer el primer evento del día
@@ -390,13 +390,36 @@ if uploaded_file_soc is not None:
             df_full['Date'] = df_full['Timestamp'].dt.date
             first_full = df_full.groupby('Date').first().reset_index()
 
+            # --- CÁLCULO DE KPIs ---
+            total_dias_muestra = df_soc_raw['Timestamp'].dt.date.nunique()
+            dias_con_clipping = len(first_full)
+            prob_clipping = (dias_con_clipping / total_dias_muestra) * 100 if total_dias_muestra > 0 else 0
+            
             if not first_full.empty:
-                # Calcular formato decimal y la mediana
+                # Calcular formato decimal y la mediana y promedio
                 first_full['Time_Decimal'] = first_full['Timestamp'].dt.hour + first_full['Timestamp'].dt.minute/60.0 + first_full['Timestamp'].dt.second/3600.0
+                
                 median_val = first_full['Time_Decimal'].median()
                 median_hour = int(median_val)
                 median_minute = int((median_val - median_hour) * 60)
+                
+                mean_val = first_full['Time_Decimal'].mean()
+                mean_hour = int(mean_val)
+                mean_minute = int((mean_val - mean_hour) * 60)
+                hora_promedio_str = f"{mean_hour:02d}:{mean_minute:02d}"
+            else:
+                hora_promedio_str = "N/A"
 
+            # Renderizar KPIs en pantalla
+            st.markdown("#### Indicadores Clave (KPIs) de Clipping")
+            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+            kpi1.metric("Días en la Muestra", total_dias_muestra)
+            kpi2.metric("Días con Clipping", dias_con_clipping)
+            kpi3.metric("Probabilidad de Clipping", f"{prob_clipping:.1f}%")
+            kpi4.metric("Hora Promedio (Inicio)", hora_promedio_str)
+            st.markdown("---")
+
+            if not first_full.empty:
                 # Calcular campos para la gráfica de fondo
                 df_soc_raw['Date_Str'] = df_soc_raw['Timestamp'].dt.date.astype(str)
                 df_soc_raw['Hour_Decimal'] = df_soc_raw['Timestamp'].dt.hour + df_soc_raw['Timestamp'].dt.minute/60.0 + df_soc_raw['Timestamp'].dt.second/3600.0
