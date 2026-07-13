@@ -196,6 +196,7 @@ def procesar_perfil_carga(df, cols_carga):
 # 3. GESTIÓN DE ESTADO Y CONSTANTES
 # ==========================================
 if 'matriz_generacion' not in st.session_state: st.session_state['matriz_generacion'] = None
+if 'n_baterias_det' not in st.session_state: st.session_state['n_baterias_det'] = 0
 
 MESES_NOMBRES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
                  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
@@ -269,6 +270,7 @@ if uploaded_file is not None:
     df_raw.columns = [c.strip() for c in df_raw.columns]
     
     n_i, n_c, n_b = detectar_equipos_csv(df_raw.columns)
+    st.session_state['n_baterias_det'] = n_b
     
     st.sidebar.success(f"**Hardware Detectado:**\n• {n_i} Inversor(es)\n• {n_c} Controlador(es)\n• {n_b} Batería(s)")
     
@@ -379,6 +381,52 @@ if uploaded_file is not None:
         df_tabla_meses = pd.DataFrame.from_dict(datos_tabla, orient='index', columns=columnas_horas)
         
         st.dataframe(df_tabla_meses, use_container_width=True)
+
+        # ==========================================
+        # 6.4. DIMENSIONAMIENTO DE BATERÍAS (BALANCE DE ENERGÍA)
+        # ==========================================
+        st.markdown("---")
+        st.subheader("Balance de Energía y Dimensionamiento (80% DoD)")
+        
+        st.write(f"**Hardware Detectado:** {st.session_state['n_baterias_det']} batería(s) de 5.0 kWh.")
+        capacidad_util = st.session_state['n_baterias_det'] * 5.0 * 0.8
+        st.write(f"**Capacidad de Absorción (Disponible cada mañana):** {capacidad_util:.2f} kWh.")
+        
+        resultados_balance = []
+        for mes in MESES_NOMBRES:
+            solar_24h = df_tabla_meses.loc[mes].values
+            
+            # Dado que los datos están en horas enteras, la potencia (kW) equivale directamente a energía (kWh) por cada hora.
+            excedente_24h = np.maximum(0, solar_24h - carga_vector)
+            consumo_directo_24h = np.minimum(solar_24h, carga_vector)
+            
+            e_solar = np.sum(solar_24h)
+            e_carga_directa = np.sum(consumo_directo_24h)
+            e_excedente = np.sum(excedente_24h)
+            
+            e_clipping = max(0, e_excedente - capacidad_util)
+            baterias_extra = np.ceil(e_clipping / 4.0) if e_clipping > 0 else 0
+            
+            resultados_balance.append({
+                "Mes": mes,
+                "E. Solar (kWh/día)": round(e_solar, 2),
+                "Consumo Directo (kWh/día)": round(e_carga_directa, 2),
+                "Excedente a Bat. (kWh/día)": round(e_excedente, 2),
+                "Clipping / Desperdicio (kWh/día)": round(e_clipping, 2),
+                "Baterías Extra (5kWh)": int(baterias_extra)
+            })
+            
+        df_balance = pd.DataFrame(resultados_balance)
+        st.dataframe(df_balance, use_container_width=True, hide_index=True)
+        
+        max_bat = df_balance['Baterías Extra (5kWh)'].max()
+        meses_clip = df_balance[df_balance['Clipping / Desperdicio (kWh/día)'] > 0]['Mes'].tolist()
+        
+        if max_bat > 0:
+            st.info(f"💡 **Conclusión del Balance:** Estadísticamente, se presentará clipping por falta de almacenamiento en: **{', '.join(meses_clip)}**. "
+                    f"Para poder absorber el 100% de la energía sobrante durante el mes más soleado, deberías agregar **{max_bat} batería(s)** adicionales.")
+        else:
+            st.success("✅ **Conclusión del Balance:** El banco de baterías actual tiene suficiente capacidad para almacenar todo el excedente solar proyectado en el año. No se requieren baterías adicionales.")
 
 else:
     st.info("Sube un archivo CSV en la barra lateral para generar las gráficas base y predicciones solares.")
