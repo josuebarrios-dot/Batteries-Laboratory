@@ -2,9 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots # Importante para la gráfica unificada
+from plotly.subplots import make_subplots
 from scipy.optimize import curve_fit
-from scipy.stats import gaussian_kde # Para la campana de Gauss
+from scipy.stats import gaussian_kde
 import re
 
 # --- Librerías para Google Sheets ---
@@ -157,9 +157,6 @@ def procesar_perfil_carga(df, cols_carga):
 # ==========================================
 # 3. GESTIÓN DE ESTADO Y CONSTANTES
 # ==========================================
-if 'n_baterias_det' not in st.session_state: st.session_state['n_baterias_det'] = 0
-if 'n_inv_det' not in st.session_state: st.session_state['n_inv_det'] = 0
-if 'n_ctrl_det' not in st.session_state: st.session_state['n_ctrl_det'] = 0
 if 'matriz_generacion' not in st.session_state: st.session_state['matriz_generacion'] = None
 
 MESES_NOMBRES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
@@ -171,10 +168,10 @@ COLORES_MESES = [
 ]
 
 # ==========================================
-# 4. BARRA LATERAL (ENTRADAS DE DATOS)
+# 4. BARRA LATERAL (ENTRADAS DE DATOS SOLAR)
 # ==========================================
-st.sidebar.header("1. Carga de Datos CSV")
-uploaded_file = st.sidebar.file_uploader("Cargar CSV de Registros", type=["csv"])
+st.sidebar.header("1. Carga de Datos Solares (CSV)")
+uploaded_file = st.sidebar.file_uploader("Cargar CSV para Análisis Solar", type=["csv"], key="solar_csv")
 
 st.sidebar.markdown("---")
 st.sidebar.header("2. Predicción Mensual Externa")
@@ -227,18 +224,15 @@ if st.session_state['matriz_generacion'] is not None:
     st.markdown("---")
 
 # ==========================================
-# 6. PROCESAMIENTO DE CSV Y GRÁFICAS
+# 6. PROCESAMIENTO DE CSV SOLAR Y GRÁFICAS
 # ==========================================
 if uploaded_file is not None:
     df_raw = pd.read_csv(uploaded_file)
     df_raw.columns = [c.strip() for c in df_raw.columns]
     
     n_i, n_c, n_b = detectar_equipos_csv(df_raw.columns)
-    st.session_state['n_inv_det'] = n_i
-    st.session_state['n_ctrl_det'] = n_c
-    st.session_state['n_baterias_det'] = n_b
     
-    st.sidebar.success(f"**Identificadores Mantenidos:**\n• {n_i} Inversor(es)\n• {n_c} Controlador(es)\n• {n_b} Batería(s)")
+    st.sidebar.success(f"**Hardware Detectado:**\n• {n_i} Inversor(es)\n• {n_c} Controlador(es)\n• {n_b} Batería(s)")
     
     df_raw['Timestamp'] = pd.to_datetime(df_raw['Timestamp'])
     df_raw['Hour_Decimal'] = df_raw['Timestamp'].dt.hour + df_raw['Timestamp'].dt.minute/60.0 + df_raw['Timestamp'].dt.second/3600.0
@@ -262,10 +256,8 @@ if uploaded_file is not None:
     else:
         carga_vector = np.zeros(len(df_inv)) if df_inv is not None else np.zeros(100)
 
-    # ==========================================
     # 6.1. VISUALIZACIÓN DE GRÁFICAS BASE
-    # ==========================================
-    st.subheader("Análisis de Datos Base CSV (Superposición de Curvas)")
+    st.subheader("Análisis de Datos Base Solar (Superposición de Curvas)")
     
     col_base1, col_base2 = st.columns(2)
     with col_base1:
@@ -275,11 +267,8 @@ if uploaded_file is not None:
         
     st.markdown("---")
 
-    # ==========================================
     # 6.2. GENERACIÓN DE CURVAS MENSUALES
-    # ==========================================
     if df_inv is not None and df_ctrl is not None:
-        
         def graficar_12_meses(df_fuente, titulo):
             fig = go.Figure()
             for i, mes_nombre in enumerate(MESES_NOMBRES):
@@ -313,7 +302,7 @@ if uploaded_file is not None:
             )
             return fig
 
-        st.subheader("Predicción Mensual CSV (Curva Típica * Factor)")
+        st.subheader("Predicción Mensual Solar (Curva Típica * Factor)")
         if st.session_state['matriz_generacion'] is not None:
             st.info("💡 Las gráficas están siendo escaladas usando el **Factor Normalizado** proveniente de Google Sheets.")
         else:
@@ -332,9 +321,7 @@ if uploaded_file is not None:
         with col_pred3:
             st.plotly_chart(graficar_12_meses(df_total, "Producción Solar Total (Inv + Ctrl)"), use_container_width=True)
 
-        # ==========================================
         # 6.3. TABLA HORIZONTAL POR MES
-        # ==========================================
         st.markdown("---")
         st.subheader("Tabla Horizontal: Producción Típica Total CSV por Mes (kW)")
         
@@ -355,126 +342,144 @@ if uploaded_file is not None:
         
         st.dataframe(df_tabla_meses, use_container_width=True)
 
-    # ==========================================
-    # 6.4. ANÁLISIS DE CLIPPING Y ESTADO DE CARGA (SoC)
-    # ==========================================
-    st.markdown("---")
-    st.subheader("Análisis de Clipping y Estado de Carga (SoC)")
+else:
+    st.info("Sube un archivo CSV en la barra lateral para generar las gráficas base y predicciones solares.")
 
-    # 1. Buscar automáticamente la columna de la batería
-    soc_cols = find_cols(df_raw, ['soc'])
-    if not soc_cols:
-        soc_cols = find_cols(df_raw, ['state of charge'])
+# ==========================================
+# 7. ANÁLISIS DE CLIPPING Y ESTADO DE CARGA (NUEVA SECCIÓN)
+# ==========================================
+st.markdown("---")
+st.header("Análisis de Batería (Clipping y SoC)")
 
-    if soc_cols:
-        soc_col = soc_cols[0]
+uploaded_file_soc = st.file_uploader("Cargar CSV específico para Análisis de Batería (SoC)", type=["csv"], key="soc_csv")
 
-        # Interfaz de ajustes para el análisis
-        col_soc1, col_soc2 = st.columns(2)
-        with col_soc1:
-            threshold = st.number_input("Límite de Clipping (SoC %)", min_value=0.0, max_value=100.0, value=99.0, step=0.1)
-        with col_soc2:
-            rango_horas = st.slider("Rango de horas de producción solar", 0, 24, (7, 15))
+if uploaded_file_soc is not None:
+    df_soc_raw = pd.read_csv(uploaded_file_soc)
+    df_soc_raw.columns = [c.strip() for c in df_soc_raw.columns]
 
-        # 2. Filtrar horas de producción
-        df_soc_idx = df_raw.set_index('Timestamp')
-        start_time_str = f"{rango_horas[0]:02d}:00"
-        end_time_str = f"{rango_horas[1]:02d}:00"
-        df_day = df_soc_idx.between_time(start_time_str, end_time_str).copy()
+    if 'Timestamp' in df_soc_raw.columns:
+        df_soc_raw['Timestamp'] = pd.to_datetime(df_soc_raw['Timestamp'])
+        df_soc_raw = df_soc_raw.sort_values('Timestamp')
 
-        # 3. Filtrar donde el SoC supera el límite y extraer el primer evento del día
-        df_full = df_day[df_day[soc_col] >= threshold].copy()
-        df_full['Date'] = df_full.index.date
-        first_full = df_full.groupby('Date').first().reset_index()
+        # Buscar automáticamente la columna de la batería
+        soc_cols = find_cols(df_soc_raw, ['soc'])
+        if not soc_cols:
+            soc_cols = find_cols(df_soc_raw, ['state of charge'])
 
-        if not first_full.empty:
-            # 4. Calcular formato decimal y la mediana
-            first_full['Time_Decimal'] = first_full['Timestamp'].dt.hour + first_full['Timestamp'].dt.minute/60.0 + first_full['Timestamp'].dt.second/3600.0
-            median_val = first_full['Time_Decimal'].median()
-            median_hour = int(median_val)
-            median_minute = int((median_val - median_hour) * 60)
+        if soc_cols:
+            soc_col = soc_cols[0]
 
-            # ==========================================
-            # GRÁFICA UNIFICADA DE SoC Y CLIPPING (PLOTLY)
-            # ==========================================
-            fig_soc = make_subplots(specs=[[{"secondary_y": True}]])
+            # Interfaz de ajustes
+            col_soc1, col_soc2 = st.columns(2)
+            with col_soc1:
+                threshold = st.number_input("Límite de Clipping (SoC %)", min_value=0.0, max_value=100.0, value=99.0, step=0.1)
+            with col_soc2:
+                rango_horas = st.slider("Rango de horas de producción solar", 0, 24, (7, 15))
 
-            # Relleno de fondo (Opcional visual en la leyenda)
-            fig_soc.add_trace(
-                go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='gray', width=2), name="Perfil de SoC (Histórico)"),
-                secondary_y=False
-            )
+            # Filtrar horas de producción
+            df_soc_idx = df_soc_raw.set_index('Timestamp')
+            start_time_str = f"{rango_horas[0]:02d}:00"
+            end_time_str = f"{rango_horas[1]:02d}:00"
+            df_day = df_soc_idx.between_time(start_time_str, end_time_str).copy()
 
-            # Capa 1: Perfiles de SoC diarios (Fondo)
-            for d in df_raw['Date_Str'].unique():
-                day_df = df_raw[df_raw['Date_Str'] == d]
+            # CORRECCIÓN DEL KEY ERROR: Devolver el índice a columna antes de agrupar
+            df_day = df_day.reset_index()
+
+            # Filtrar donde el SoC supera el límite y extraer el primer evento del día
+            df_full = df_day[df_day[soc_col] >= threshold].copy()
+            df_full['Date'] = df_full['Timestamp'].dt.date
+            first_full = df_full.groupby('Date').first().reset_index()
+
+            if not first_full.empty:
+                # Calcular formato decimal y la mediana
+                first_full['Time_Decimal'] = first_full['Timestamp'].dt.hour + first_full['Timestamp'].dt.minute/60.0 + first_full['Timestamp'].dt.second/3600.0
+                median_val = first_full['Time_Decimal'].median()
+                median_hour = int(median_val)
+                median_minute = int((median_val - median_hour) * 60)
+
+                # Calcular campos para la gráfica de fondo
+                df_soc_raw['Date_Str'] = df_soc_raw['Timestamp'].dt.date.astype(str)
+                df_soc_raw['Hour_Decimal'] = df_soc_raw['Timestamp'].dt.hour + df_soc_raw['Timestamp'].dt.minute/60.0 + df_soc_raw['Timestamp'].dt.second/3600.0
+
+                # ==========================================
+                # GRÁFICA UNIFICADA DE SoC Y CLIPPING (PLOTLY)
+                # ==========================================
+                fig_soc = make_subplots(specs=[[{"secondary_y": True}]])
+
                 fig_soc.add_trace(
-                    go.Scatter(x=day_df['Hour_Decimal'], y=day_df[soc_col], mode='lines',
-                               line=dict(color='gray', width=1), opacity=0.3, showlegend=False),
+                    go.Scatter(x=[None], y=[None], mode='lines', line=dict(color='gray', width=2), name="Perfil de SoC (Histórico)"),
                     secondary_y=False
                 )
 
-            # Capa 2: Histograma de frecuencia
-            fig_soc.add_trace(
-                go.Histogram(x=first_full['Time_Decimal'], marker_color='#FFD600', opacity=0.7,
-                             name="Frecuencia (Días)", nbinsx=15),
-                secondary_y=True
-            )
+                # Capa 1: Perfiles de SoC diarios (Fondo)
+                for d in df_soc_raw['Date_Str'].unique():
+                    day_df = df_soc_raw[df_soc_raw['Date_Str'] == d]
+                    fig_soc.add_trace(
+                        go.Scatter(x=day_df['Hour_Decimal'], y=day_df[soc_col], mode='lines',
+                                   line=dict(color='gray', width=1), opacity=0.3, showlegend=False),
+                        secondary_y=False
+                    )
 
-            # Capa 3: Curva KDE (Campana de Gauss) usando Scipy
-            try:
-                kde = gaussian_kde(first_full['Time_Decimal'])
-                x_kde = np.linspace(first_full['Time_Decimal'].min(), first_full['Time_Decimal'].max(), 100)
-                y_kde = kde(x_kde)
-                
-                # Escalar la campana a la altura del histograma
-                bin_width = (first_full['Time_Decimal'].max() - first_full['Time_Decimal'].min()) / 15
-                if bin_width == 0: bin_width = 1
-                y_kde_scaled = y_kde * len(first_full) * bin_width
-
+                # Capa 2: Histograma de frecuencia
                 fig_soc.add_trace(
-                    go.Scatter(x=x_kde, y=y_kde_scaled, mode='lines', line=dict(color='white', width=2), name="Distribución (KDE)"),
+                    go.Histogram(x=first_full['Time_Decimal'], marker_color='#FFD600', opacity=0.7,
+                                 name="Frecuencia (Días)", nbinsx=15),
                     secondary_y=True
                 )
-            except Exception:
-                pass # Se ignora si no hay suficiente varianza para calcular la campana
 
-            # Líneas de referencia y zonas de sombra
-            fig_soc.add_vline(x=median_val, line_dash="dash", line_color="red",
-                              annotation_text=f" Mediana: {median_hour:02d}:{median_minute:02d}",
-                              annotation_position="top left", annotation_font_color="red")
-            fig_soc.add_hline(y=threshold, line_dash="dot", line_color="red", secondary_y=False)
-            fig_soc.add_vrect(x0=rango_horas[0], x1=rango_horas[1], fillcolor="yellow", opacity=0.1, layer="below")
+                # Capa 3: Curva KDE (Campana de Gauss) usando Scipy
+                try:
+                    kde = gaussian_kde(first_full['Time_Decimal'])
+                    x_kde = np.linspace(first_full['Time_Decimal'].min(), first_full['Time_Decimal'].max(), 100)
+                    y_kde = kde(x_kde)
+                    
+                    bin_width = (first_full['Time_Decimal'].max() - first_full['Time_Decimal'].min()) / 15
+                    if bin_width == 0: bin_width = 1
+                    y_kde_scaled = y_kde * len(first_full) * bin_width
 
-            # Formato general de la gráfica interactiva
-            fig_soc.update_layout(
-                title=f"Perfil Diario de Batería y Mediana de Clipping ({threshold}%)",
-                width=1200, height=500,
-                template="plotly_dark",
-                hovermode="x unified",
-                legend=dict(orientation="h", y=1.1)
-            )
-            fig_soc.update_xaxes(title_text="Hora del día (Formato 24h)", range=[0, 24],
-                                 tickvals=list(range(0, 25, 2)),
-                                 ticktext=[f"{h:02d}:00" for h in range(0, 25, 2)])
-            fig_soc.update_yaxes(title_text="Estado de Carga - SoC (%)", range=[0, 105], secondary_y=False)
-            fig_soc.update_yaxes(title_text="Frecuencia (Número de Días)", secondary_y=True)
+                    fig_soc.add_trace(
+                        go.Scatter(x=x_kde, y=y_kde_scaled, mode='lines', line=dict(color='white', width=2), name="Distribución (KDE)"),
+                        secondary_y=True
+                    )
+                except Exception:
+                    pass
 
-            st.plotly_chart(fig_soc, use_container_width=True)
+                # Líneas de referencia y zonas de sombra
+                fig_soc.add_vline(x=median_val, line_dash="dash", line_color="red",
+                                  annotation_text=f" Mediana: {median_hour:02d}:{median_minute:02d}",
+                                  annotation_position="top left", annotation_font_color="red")
+                fig_soc.add_hline(y=threshold, line_dash="dot", line_color="red", secondary_y=False)
+                fig_soc.add_vrect(x0=rango_horas[0], x1=rango_horas[1], fillcolor="yellow", opacity=0.1, layer="below")
 
-            # 5. Tabla de eventos exactos
-            st.markdown(f"**Fechas y horas exactas de inicio de Clipping (SoC $\ge$ {threshold}%)**")
-            df_tabla_clipping = first_full[['Timestamp', soc_col]].copy()
-            df_tabla_clipping['Hora Exacta'] = df_tabla_clipping['Timestamp'].dt.strftime('%H:%M:%S')
-            df_tabla_clipping['Fecha'] = df_tabla_clipping['Timestamp'].dt.strftime('%Y-%m-%d')
-            
-            # Mostrar tabla en una columna para no ocupar todo el ancho
-            col_t1, col_t2, col_t3 = st.columns([1,2,1])
-            with col_t2:
-                st.dataframe(df_tabla_clipping[['Fecha', 'Hora Exacta', soc_col]], use_container_width=True, hide_index=True)
+                fig_soc.update_layout(
+                    title=f"Perfil Diario de Batería y Mediana de Clipping ({threshold}%)",
+                    width=1200, height=500,
+                    template="plotly_dark",
+                    hovermode="x unified",
+                    legend=dict(orientation="h", y=1.1)
+                )
+                fig_soc.update_xaxes(title_text="Hora del día (Formato 24h)", range=[0, 24],
+                                     tickvals=list(range(0, 25, 2)),
+                                     ticktext=[f"{h:02d}:00" for h in range(0, 25, 2)])
+                fig_soc.update_yaxes(title_text="Estado de Carga - SoC (%)", range=[0, 105], secondary_y=False)
+                fig_soc.update_yaxes(title_text="Frecuencia (Número de Días)", secondary_y=True)
+
+                st.plotly_chart(fig_soc, use_container_width=True)
+
+                # 5. Tabla de eventos exactos
+                st.markdown(f"**Fechas y horas exactas de inicio de Clipping (SoC >= {threshold}%)**")
+                df_tabla_clipping = first_full[['Timestamp', soc_col]].copy()
+                df_tabla_clipping['Hora Exacta'] = df_tabla_clipping['Timestamp'].dt.strftime('%H:%M:%S')
+                df_tabla_clipping['Fecha'] = df_tabla_clipping['Timestamp'].dt.strftime('%Y-%m-%d')
+                
+                col_t1, col_t2, col_t3 = st.columns([1,2,1])
+                with col_t2:
+                    st.dataframe(df_tabla_clipping[['Fecha', 'Hora Exacta', soc_col]], use_container_width=True, hide_index=True)
+
+            else:
+                st.warning(f"No se encontraron eventos donde el SoC superara el {threshold}% entre las {start_time_str} y {end_time_str}.")
 
         else:
-            st.warning(f"No se encontraron eventos donde el SoC superara el {threshold}% entre las {start_time_str} y {end_time_str}.")
-
+            st.info("No se detectó una columna de SoC (State of Charge) en el CSV para realizar el análisis de batería.")
     else:
-        st.info("No se detectó una columna de SoC (State of Charge) en el CSV para realizar el análisis de batería.")
+        st.error("El CSV subido no contiene una columna 'Timestamp'.")
